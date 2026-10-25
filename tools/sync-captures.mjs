@@ -1,7 +1,7 @@
 // Add newly captured reference records without overwriting local edits.
 import {definitions} from '../dist/data.js';
 import {readInventory,replaceInventory} from '../database.mjs';
-const data=readInventory();let added=0,enriched=0;
+const data=await readInventory();let added=0,enriched=0;
 for(const [name,d] of Object.entries(definitions)){
  const existing=new Set(data.tables[name].map(r=>r.Code));
  for(const row of d.rows){
@@ -12,5 +12,5 @@ for(const [name,d] of Object.entries(definitions)){
   }
  }
 }
-if(added||enriched)replaceInventory(data.tables,data.revision);
+if(added||enriched)await replaceInventory(data.tables,data.revision);
 console.log(JSON.stringify({capturedRecordsAdded:added,capturedFieldsAdded:enriched}));

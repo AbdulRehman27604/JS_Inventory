@@ -1,8 +1,9 @@
+import {reuseChoices,addReuseToCut} from './cutting-reuse.js';
 import {localISODate} from './date-utils.js';
 import {cuttingJobSheet} from './cutting-job-sheet.js';
 import {coilLabel} from './coil-label.js';
-import {CUTTING,coilsFrom,calculateCutting,cuttingStock,maximumStrips,optimizeLayout,appendCut,snapshotCuts} from './cutting.js';
-import {menus,definitions,reportSources,reportOptions} from './data.js';
+import {CUTTING,coilsFrom,calculateCutting,cuttingStock,maximumStrips,optimizeLayout,appendCut,snapshotCuts,hasCutWeights} from './cutting.js';
+import {menus,definitions,reportSources,reportOptions} from './schema.js';
 
 const nativeFetch=window.fetch.bind(window);
 const authResponse=await nativeFetch('/api/auth/session');
@@ -75,17 +76,26 @@ document.addEventListener('keydown',e=>{
  if(e.key==='ArrowDown'&&e.target.parentElement?.classList.contains('menu')){e.preventDefault();e.target.parentElement.classList.add('open');e.target.setAttribute('aria-expanded','true');e.target.parentElement.querySelector('[role=menuitem]')?.focus();}
  if(e.target.matches('[role=menuitem]')&&['ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();const items=[...e.target.parentElement.querySelectorAll('[role=menuitem]')];items[(items.indexOf(e.target)+(e.key==='ArrowDown'?1:-1)+items.length)%items.length].focus();}
 });
-function navigate(name){
+function navigate(name,options={}){
  if(name==='GRN Item Setup')name='Item Master Setup';
- if(editing){message('Unsaved local changes','<p>Discard the changes to this local record?</p>',[{label:'Discard and continue',run:()=>{editing=false;navigate(name);}}]);return;}
+ if(editing){message('Unsaved local changes','<p>Discard the changes to this local record?</p>',[{label:'Discard and continue',run:()=>{editing=false;navigate(name,options);}}]);return;}
  if(name==='Dashboard'){closeWindow();return;}
  if(name==='About this local copy'){coverage();return;}
  if(name==='Captured screens'){captures();return;}
  if(name==='Export local data'){exportJSON();return;}
  if(name==='Import local data'){importJSON();return;}
  current=name;index=0;editing=false;adding=false;query='';
- location.hash=encodeURIComponent(name);
- render();
+ let missing=false;
+ if(name===CUTTING||name==='GRN (Goods Received Note)'){
+  const receiving=name==='GRN (Goods Received Note)';let code=options.recordCode;
+  try{if(!code)code=sessionStorage.getItem(receiving?'inventory-last-grn':'inventory-last-cutting-job');}catch{}
+  const found=rowsFor(name).findIndex(record=>record.Code===code);if(found>=0)index=found;else{missing=Boolean(options.recordCode);if(receiving)index=Math.max(0,rowsFor(name).length-1);}
+ }
+ let target='#'+encodeURIComponent(name);
+ if((name===CUTTING||name==='GRN (Goods Received Note)')&&rowsFor(name)[index]?.Code&&!missing){const params=new URLSearchParams({[name===CUTTING?'job':'receipt']:rowsFor(name)[index].Code});if(options.sheet)params.set('sheet','1');if(options.fromList)params.set('from','jobs');target+='?'+params.toString();}
+ if(location.hash!==target)history[options.fromHash?'replaceState':'pushState'](null,'',target);render();
+ if(missing){textMessage('Record not found',name===CUTTING?'The saved cutting job could not be found. Open Reports → Cutting Job Sheets to select an available job.':'The saved receipt could not be found. Choose an available receipt from the receipt selector.');return;}
+ if(name===CUTTING&&options.sheet){if(rowsFor(CUTTING)[index]?.['Cutting Status']==='Posted')renderCuttingSheet(rowsFor(CUTTING)[index],options.fromList);else textMessage('Job sheet unavailable','Only posted cutting jobs can issue a labour job sheet. This job is no longer posted.');}
 }
 function closeWindow(){
  if(editing){message('Unsaved local changes','<p>Discard the changes to this local record?</p>',[{label:'Discard and close',run:()=>{editing=false;closeWindow();}}]);return;}
@@ -111,6 +121,7 @@ function createWindow(title){
  return win.querySelector('.window-body');
 }
 function render(){
+ if(current==='Cutting Job Sheets')return renderJobSheets();
  if(current==='Coil & Strip Stock')return renderCoilStock();
  if(reportSources[current])return renderReport();
  if(menus['System Admin'].includes(current))return renderAdmin();
@@ -123,7 +134,7 @@ function render(){
  const fields=current===CUTTING?[...priority,...fieldsFor(d).filter(f=>!priority.includes(f))]:fieldsFor(d);
  const fieldMarkup=fields.map((f,i)=>{
    const label=current===CUTTING&&f==='Processed Weight'?(editing?'Weight for next cut (kg)':'Total processed weight (kg)'):current===CUTTING&&f==='Weight'?'Calculated weight (kg)':f==='Code'||f==='Name'?`${d.prefix} ${f}`:f;
-   const id='field-'+i,value=current===CUTTING&&editing&&f==='Processed Weight'&&record._lines?.some(l=>l['Cut Weight']!==undefined)?'':record[f]??(adding&&f==='Date'?localISODate():'');
+   const id='field-'+i,value=current===CUTTING&&editing&&f==='Processed Weight'&&hasCutWeights(record._lines)?'':record[f]??(adding&&f==='Date'?localISODate():'');
    const source={'Company Name':'Company Setup','Main Category':'Item Main Category','Sub Category':'Item Sub Category','Thickness':'Thickness Setup','Pack Size':'Unit Setup','Supplier':'Supplier Setup','Buyer':'Buyer Setup','Department':'Department Creation'}[f];
    const options=f==='Coil Reference'?[...coilsFrom(store).keys()]:f==='Trim Disposition'?['Scrap','Reusable']:f==='Cutting Status'?['Draft']:source?rowsFor(source).map(r=>r.Name):f==='Item Type'?['RM','FG']:f==='Imported/Local'?['Imported','Local']:f==='Supplier Type'?['FG','RM']:null;
    const attributes=`id="${id}" data-field="${esc(f)}" ${editing?'':'readonly'} ${f==='Code'&&editing?'required':''}`;
@@ -142,10 +153,12 @@ function render(){
  if(d.note)body.insertAdjacentHTML('beforeend',`<details class="screen-notes"><summary>Screen notes</summary><p class="window-note">${esc(d.note)}</p></details>`);
  body.insertAdjacentHTML('beforeend',toolbarHtml());
  bindToolbar(body);bindRows(body);
+ if(current==='GRN (Goods Received Note)'&&!editing)setupReceiptSelector(body,record);
  const tableSearch=body.querySelector('#setup-search');if(tableSearch)tableSearch.oninput=()=>{query=tableSearch.value;$('#setup-table').innerHTML=tableHtml(current);bindRows(body);};
  if(current===CUTTING){
   if(cuttingLocked)body.querySelectorAll('[data-action=Edit],[data-action=Delete]').forEach(b=>b.disabled=true);
   setupCutting(body,record);
+  if(!editing&&record.Code)rememberCuttingJob(record.Code,false);
 
  }
  status(editing?(adding?'Adding local record':'Editing local record'):`${current} · ${records.length?index+1:0} / ${records.length} captured or local records`);
@@ -164,7 +177,7 @@ function renderLines(d){
  const fields=current==='GRN (Goods Received Note)'?grnFields:current===CUTTING?['Cut No','Cut Weight',...originalFields.filter(f=>!['Cut No','Cut Weight'].includes(f))]:originalFields;
  const container=$('#line-items');
  const labels=current==='GRN (Goods Received Note)'&&!editing;
- container.innerHTML=`${editing?`<div class="line-editor ${current==='GRN (Goods Received Note)'?'grn-line-editor':''}">${fields.filter(f=>current!==CUTTING||!['Cut No','Cut Weight'].includes(f)).map((f,i)=>`<label>${esc(current===CUTTING&&f==='Quantity'?'Number of strips':f)}${current==='GRN (Goods Received Note)'&&['Item Code','Item Description','Coil Type','Coil Code'].includes(f)?grnDropdown(f):current===CUTTING&&['Pipe Code','Strip Code'].includes(f)?`<select data-line-field="${esc(f)}" aria-label="Line ${esc(f)}"><option value="">Select…</option>${rowsFor(f==='Pipe Code'?'Pipe Size Setup':'Strip Size Setup').map(r=>`<option value="${esc(r.Code)}">${esc(r.Code)} · ${esc(r.Name)}</option>`).join('')}</select>`:`<input data-line-field="${esc(f)}" aria-label="Line ${esc(f)}" ${(current===CUTTING&&['Total Width','Weight'].includes(f))||(current==='GRN (Goods Received Note)'&&f==='Coil ID')?'readonly':''} ${current==='GRN (Goods Received Note)'&&f==='Coil ID'?'placeholder="Assigned on Save"':''}>`}</label>`).join('')}<button class="plain-button" id="add-line">Submit line</button></div>`:''}<div class="table-box"><table class="record-table" aria-label="Transaction line items"><thead><tr>${fields.map(f=>`<th>${esc(f)}</th>`).join('')}${editing?'<th></th>':labels?'<th>Coil label</th>':''}</tr></thead><tbody>${lineDraft.map((line,i)=>`<tr>${fields.map(f=>`<td>${esc(line[f])}</td>`).join('')}${editing?`<td><button data-remove-line="${i}" aria-label="Remove line ${i+1}">×</button></td>`:labels?`<td><button class="plain-button" data-coil-label="${i}" ${line['Coil ID']||line['Manuf Code']?'':'disabled'}>Print coil label</button></td>`:''}</tr>`).join('')}</tbody></table>${lineDraft.length?'':'<div class="empty">No captured or local line items</div>'}</div>`;
+ container.innerHTML=`${editing?`<div class="line-editor ${current==='GRN (Goods Received Note)'?'grn-line-editor':''}">${fields.filter(f=>current!==CUTTING||!['Cut No','Cut Weight'].includes(f)).map((f,i)=>`<label>${esc(current===CUTTING&&f==='Quantity'?'Number of strips':f)}${f==='Issue'?'<select data-line-field="Issue" aria-label="Line Issue"><option value="">Select…</option><option value="Y">Yes</option><option value="N">No</option></select>':current==='GRN (Goods Received Note)'&&['Item Code','Item Description','Coil Type','Coil Code'].includes(f)?grnDropdown(f):current===CUTTING&&['Pipe Code','Strip Code'].includes(f)?`<select data-line-field="${esc(f)}" aria-label="Line ${esc(f)}"><option value="">Select…</option>${rowsFor(f==='Pipe Code'?'Pipe Size Setup':'Strip Size Setup').map(r=>`<option value="${esc(r.Code)}">${esc(r.Code)} · ${esc(r.Name)}</option>`).join('')}</select>`:`<input data-line-field="${esc(f)}" aria-label="Line ${esc(f)}" ${(current===CUTTING&&['Total Width','Weight'].includes(f))||(current==='GRN (Goods Received Note)'&&f==='Coil ID')?'readonly':''} ${current==='GRN (Goods Received Note)'&&f==='Coil ID'?'placeholder="Assigned on Save"':''}>`}</label>`).join('')}<button class="plain-button" id="add-line">Submit line</button></div>`:''}<div class="table-box"><table class="record-table" aria-label="Transaction line items"><thead><tr>${fields.map(f=>`<th>${esc(f)}</th>`).join('')}${editing?'<th></th>':labels?'<th>Coil label</th>':''}</tr></thead><tbody>${lineDraft.map((line,i)=>`<tr>${fields.map(f=>`<td>${esc(line[f])}</td>`).join('')}${editing?`<td><button data-remove-line="${i}" aria-label="${current===CUTTING&&line['Cut No']?'Remove cut '+line['Cut No']:'Remove line '+(i+1)}" title="${current===CUTTING&&line['Cut No']?'Remove this entire cut':'Remove line'}">×</button></td>`:labels?`<td><button class="plain-button" data-coil-label="${i}" ${line['Coil ID']||line['Manuf Code']?'':'disabled'}>Print coil label</button></td>`:''}</tr>`).join('')}</tbody></table>${lineDraft.length?'':'<div class="empty">No captured or local line items</div>'}</div>`;
  if(labels&&lineDraft.some(line=>line['Coil ID']||line['Manuf Code'])){const button=document.createElement('button');button.className='plain-button';button.id='receipt-coil-labels';button.textContent='Coil labels · Print / Save PDF';button.onclick=()=>renderCoilLabels(rowsFor(current)[index],lineDraft.findIndex(line=>line['Coil ID']||line['Manuf Code']));container.prepend(button);}
  if(labels)container.querySelectorAll('[data-coil-label]').forEach(button=>button.onclick=()=>renderCoilLabels(rowsFor(current)[index],Number(button.dataset.coilLabel)));
  if(editing){
@@ -223,7 +236,7 @@ async function action(name){
   const update=()=>{query=input.value;results.innerHTML=`<p>${filtered(current).length} matches</p><div class="table-box" style="max-height:280px;min-height:80px"><table class="record-table"><tbody>${filtered(current).map(({r,i})=>`<tr data-result="${i}" tabindex="0"><td>${esc(r.Code)}</td><td>${esc(r.Name||r.Caption||r.Description||'')}</td></tr>`).join('')}</tbody></table></div>`;results.querySelectorAll('[data-result]').forEach(e=>{const select=()=>{index=Number(e.dataset.result);query='';modal.close();render();};e.onclick=select;e.onkeydown=k=>{if(k.key==='Enter')select();};});};
   input.oninput=update;update();return;
  }
- if(name==='Report'){renderRecordReport(current);return;}
+ if(name==='Report'){if(current===CUTTING&&rows[index]?.['Cutting Status']==='Posted')renderCuttingSheet(rows[index]);else renderRecordReport(current);return;}
  render();
  if(name==='Save')status('Saved · '+current+' · '+(rowsFor(current)[index]?.Code||''));
  if(editing){const code=$('[data-field="Code"]');if(adding&&code){const numeric=rows.map(r=>Number(r.Code)).filter(Number.isFinite);code.value=String(Math.max(0,...numeric)+1).padStart(rows[0]?.Code?.length||3,'0');}document.querySelector('[data-field]')?.focus();}
@@ -286,14 +299,14 @@ function renderAdmin(){const body=createWindow(current);body.innerHTML=`<div cla
 function coverage(){message('About this local copy',`<p><strong>Inventory and Production System</strong> — private local recreation.</p><p>The original site streams a Windows application into a canvas. This version recreates its menus and forms using captured screenshots and transcribed visible records.</p><ul><li>Setup navigation, record selection, search, First/Previous/Next/Last, local Add/Edit/Delete/Undo/Save, CSV reports, printing, and JSON import/export work locally.</li><li>Only observed records are included. Uncaptured fields remain blank. Additional server records were not downloaded.</li><li>Transaction forms and reports are local substitutes; server calculations and live inventory updates are unavailable.</li><li>Original user accounts and permissions are unavailable. No passwords, cookies, or session tokens are included.</li><li>Changes persist in the local SQLite database at data/inventory.sqlite. Use Export local data to make a backup.</li></ul><p>No external services are required. This copy does not contact the original server.</p>`);}
 function captures(){const entries=Object.entries(definitions).filter(([,d])=>d.capture);message('Captured screens',`<p>Original visible screens captured from the authorized session. Some captures contain incomplete remote rendering.</p><div class="capture-list">${entries.map(([name,d])=>`<a href="/reference/${esc(d.capture)}.png" target="_blank" rel="noopener">${esc(name)}</a>`).join('')}</div>`);}
 $('#coverage').onclick=coverage;
-const initial=decodeURIComponent(location.hash.slice(1));if(initial==='Coil & Strip Stock'||definitions[initial]||reportSources[initial]||menus['System Admin'].includes(initial))navigate(initial);else renderDashboard();
-window.addEventListener('hashchange',()=>{const name=decodeURIComponent(location.hash.slice(1));if(name&&name!==current&&(definitions[name]||reportSources[name]))navigate(name);});
+if(!openHashRoute())renderDashboard();
+window.addEventListener('hashchange',()=>{openHashRoute();});
 window.addEventListener('beforeunload',e=>{if(editing){e.preventDefault();e.returnValue='';}});
 
 function cuttingForm(){
  const job={};document.querySelectorAll('[data-field]').forEach(e=>job[e.dataset.field]=e.value);
  job._lines=clone(lineDraft);
- if(editing&&job._lines.length&&!job._lines.some(l=>l['Cut Weight']!==undefined)){
+ if(editing&&job._lines.length&&!hasCutWeights(job._lines)){
   const saved=!adding?rowsFor(CUTTING)[index]:null;
   if(Number(saved?.['Processed Weight'])>0)job._lines=snapshotCuts(job._lines,saved['Processed Weight']);
  }
@@ -330,6 +343,9 @@ function setupCutting(body,record){
   body.querySelectorAll('[data-field]').forEach(e=>e.addEventListener('input',updateCuttingSummary));
   bindCuttingLines();
  }else{
+  const selector=document.createElement('div');selector.className='saved-cutting-selector';
+  selector.innerHTML=`<label for="saved-cutting-job">Saved cutting job</label><select id="saved-cutting-job">${rowsFor(CUTTING).map(job=>`<option value="${esc(job.Code)}" ${job.Code===record.Code?'selected':''}>${esc(job.Code)} · ${esc(job.Date||'No date')} · ${esc(job['Coil Reference']||job['Manuf Code']||'No coil selected')} · ${esc(job['Cutting Status']||'Not posted')}</option>`).join('')}</select><button class="plain-button" id="all-cutting-job-sheets">Saved job sheets</button>`;
+  body.querySelector('.cutting-summary').before(selector);$('#saved-cutting-job').onchange=()=>navigate(CUTTING,{recordCode:$('#saved-cutting-job').value});$('#all-cutting-job-sheets').onclick=()=>navigate('Cutting Job Sheets');
   const actions=$('#cutting-actions');
   if(record.Code&&record['Cutting Status']!=='Void'){
    const posted=record['Cutting Status']==='Posted',button=document.createElement('button');button.className='plain-button';button.textContent=posted?'Void cutting':'Post cutting';
@@ -403,7 +419,8 @@ function updateCuttingSummary(){
   else html+=`<p><strong>${result.cuts.length} separate cuts</strong> · Total processed weight: ${f(result.processed)} kg · Weight utilization: ${result.utilization.toFixed(2)}%</p>`;
   if(pendingPreview)html+='<p><strong>Preview includes the next, unsubmitted cut.</strong> Submitted cuts keep their recorded weights.</p>';
   html+=`<p>Estimated strips: ${f(result.outputWeight)} kg · ${esc(job['Trim Disposition'])}: ${f(result.trimWeight)} kg · Coil weight after this job: <strong>${f(coil.remainingWeight-deduct)} kg</strong></p>`;
-  if(result.separateCuts){let remaining=coil.remainingWeight;html+='<div class="table-box cut-balance-table"><table class="record-table"><thead><tr><th>Cut</th><th>Cut weight kg</th><th>Used width mm</th><th>Unused width mm</th>'+(!applied?'<th>Coil kg after cut</th>':'')+'</tr></thead><tbody>'+result.cuts.map((cut,i)=>{remaining-=cut.processed;return `<tr><td>${cut.number}${pendingPreview&&i===result.cuts.length-1?' (preview)':''}</td><td>${f(cut.processed)}</td><td>${f(cut.usedWidth)}</td><td>${f(cut.remainingWidth)}</td>${!applied?`<td>${f(remaining)}</td>`:''}</tr>`;}).join('')+'</tbody></table></div>';}
+  if(!result.separateCuts&&result.lines.length>1)html+='<p>This existing job uses one shared weight for all its lines. To record separate cut weights, enter each cut in a new job; void this job first if it is posted.</p>';
+  if(result.separateCuts){let remaining=coil.remainingWeight;html+='<div class="table-box cut-balance-table"><table class="record-table"><thead><tr><th>Cut</th><th>Cut weight kg</th><th>Used width mm</th><th>Unused width mm</th>'+(!applied?'<th>Coil kg after cut</th>':'')+(editing?'<th>Same-cut reuse</th>':'')+'</tr></thead><tbody>'+result.cuts.map((cut,i)=>{remaining-=cut.processed;return `<tr><td>${cut.number}${pendingPreview&&i===result.cuts.length-1?' (preview)':''}</td><td>${f(cut.processed)}</td><td>${f(cut.usedWidth)}</td><td>${f(cut.remainingWidth)}</td>${!applied?`<td>${f(remaining)}</td>`:''}${editing?`<td>${pendingPreview&&i===result.cuts.length-1?'Submit cut first':`<button class="plain-button" data-reuse-cut="${cut.number}" ${cut.remainingWidth<=1e-7?'disabled':''}>${cut.remainingWidth<=1e-7?'Fully allocated':'Use remaining width'}</button>`}</td>`:''}</tr>`;}).join('')+'</tbody></table></div>';}
   if(result.processed>coil.remainingWeight+1e-7&&!applied)html+='<p class="cutting-error">Insufficient coil stock. These cuts cannot be posted.</p>';
   if(editing&&pendingPreview){const last=result.lines.at(-1);const weight=document.querySelector('[data-line-field="Weight"]'),width=document.querySelector('[data-line-field="Total Width"]');if(weight)weight.value=f(last.Weight);if(width)width.value=f(last['Total Width']);}
  }catch(error){html+=`<p class="cutting-error">${esc(error.message)}</p>`;}
@@ -411,7 +428,7 @@ function updateCuttingSummary(){
  const related=outputs.filter(o=>o.coil===coil.reference);
  if(related.length)html+='<details><summary>Posted strip, scrap and remnant outputs</summary><table class="record-table"><thead><tr><th>Job</th><th>Type</th><th>Width mm</th><th>Strips</th><th>Weight kg</th></tr></thead><tbody>'+related.map(o=>`<tr><td>${esc(o.job)}</td><td>${esc(o.type)}</td><td>${f(o.width)}</td><td>${o.quantity}</td><td>${f(o.weight)}</td></tr>`).join('')+'</tbody></table></details>';
  html+='<p>Unprocessed coil retains its original width. Estimates assume equal thickness and processed length; they do not represent actual weighed production.</p>';
- container.innerHTML=html;
+ container.innerHTML=html;container.querySelectorAll('[data-reuse-cut]').forEach(button=>button.onclick=()=>openReuseCut(Number(button.dataset.reuseCut)));
  }catch(error){container.textContent=error.message;}
 }
 
@@ -419,7 +436,7 @@ function renderCoilStock(){
  const body=createWindow('Coil & Strip Stock');
  try{
   const {coils,outputs}=cuttingStock(store),f=n=>Number(n).toFixed(3);
-  body.innerHTML=`<h2>Coil stock</h2><p>Live balances from received coils and posted cutting jobs. Widths are mm; weights are kg. Draft and historical unposted jobs have no stock effect.</p><div class="table-box"><table class="record-table"><thead><tr><th>Receipt / Coil</th><th>Original width</th><th>Received weight</th><th>Processed weight</th><th>Remaining weight</th></tr></thead><tbody>${[...coils.values()].map(c=>`<tr><td>${esc(c.label)}</td><td>${f(c.width)}</td><td>${f(c.weight)}</td><td>${f(c.processedWeight)}</td><td>${f(c.remainingWeight)}</td></tr>`).join('')}</tbody></table></div><h2>Cutting outputs</h2><p>Estimated output ledger. These outputs are not yet deducted by production or deliveries.</p><div class="table-box"><table class="record-table"><thead><tr><th>Job</th><th>Coil</th><th>Type</th><th>Pipe</th><th>Width</th><th>Strips</th><th>Estimated weight</th></tr></thead><tbody>${outputs.map(o=>`<tr><td>${esc(o.job)}</td><td>${esc(o.coil)}</td><td>${esc(o.type)}</td><td>${esc(o.pipe||'')}</td><td>${f(o.width)}</td><td>${o.quantity}</td><td>${f(o.weight)}</td></tr>`).join('')}</tbody></table></div><div class="report-actions"><button class="plain-button" id="coil-refresh">Refresh</button><button class="plain-button" id="coil-print">Print / Save PDF</button></div>`;
+  body.innerHTML=`<h2>Coil stock</h2><p>Live balances from received coils and posted cutting jobs. Widths are mm; weights are kg. Draft and historical unposted jobs have no stock effect.</p><div class="table-box"><table class="record-table"><thead><tr><th>Receipt / Coil</th><th>Original width</th><th>Received weight</th><th>Processed weight</th><th>Remaining weight</th></tr></thead><tbody>${[...coils.values()].map(c=>`<tr><td>${esc(c.label)}</td><td>${f(c.width)}</td><td>${f(c.weight)}</td><td>${f(c.processedWeight)}</td><td>${f(c.remainingWeight)}</td></tr>`).join('')}</tbody></table></div><h2>Cutting outputs</h2><p>Estimated output ledger. These outputs are not yet deducted by production or deliveries.</p><div class="table-box"><table class="record-table"><thead><tr><th>Job</th><th>Cut</th><th>Coil</th><th>Type</th><th>Pipe</th><th>Width</th><th>Strips</th><th>Estimated weight</th></tr></thead><tbody>${outputs.map(o=>`<tr><td>${esc(o.job)}</td><td>${o.cut}</td><td>${esc(o.coil)}</td><td>${esc(o.type)}</td><td>${esc(o.pipe||'')}</td><td>${f(o.width)}</td><td>${o.quantity}</td><td>${f(o.weight)}</td></tr>`).join('')}</tbody></table></div><div class="report-actions"><button class="plain-button" id="coil-refresh">Refresh</button><button class="plain-button" id="coil-print">Print / Save PDF</button></div>`;
   $('#coil-print').onclick=()=>window.print();
   $('#coil-refresh').onclick=async()=>{try{const response=await fetch('/api/data');if(!response.ok)throw Error('Unable to refresh inventory');const data=await response.json();store=data.tables;revision=data.revision;renderCoilStock();}catch(error){textMessage('Refresh failed',error.message);}};
  }catch(error){body.textContent=error.message;}
@@ -477,11 +494,12 @@ function suggestCuttingLayout(){
   };
  }catch(error){textMessage('Unable to suggest layout',error.message);}
 }
-function renderCuttingSheet(job){
+function renderCuttingSheet(job,fromList=false){
  try{
   const coil=coilsFrom(store).get(job['Coil Reference']),html=cuttingJobSheet(job,coil),body=createWindow('Cutting job sheet — '+job.Code);
-  body.classList.add('cutting-sheet-view');body.innerHTML=`<div class="report-actions"><button class="plain-button" id="print-cutting-sheet">Print / Save PDF</button><button class="plain-button" id="back-cutting-sheet">Back to cutting job</button></div><p class="window-note">A4 portrait · Issue this posted job sheet to the labour team. Turn off browser headers and footers.</p>${html}`;
-  $('#print-cutting-sheet').onclick=()=>window.print();$('#back-cutting-sheet').onclick=()=>render();status('Posted cutting job sheet · '+job.Code);
+  rememberCuttingJob(job.Code,true,fromList);
+  body.classList.add('cutting-sheet-view');body.innerHTML=`<div class="report-actions"><button class="plain-button" id="print-cutting-sheet">Print / Save PDF</button><button class="plain-button" id="back-cutting-sheet">${fromList?'Back to saved job sheets':'Back to cutting job'}</button><button class="plain-button" id="saved-job-sheets">All saved job sheets</button></div><p class="window-note">A4 portrait · Issue this posted job sheet to the labour team. Turn off browser headers and footers.</p>${html}`;
+  $('#print-cutting-sheet').onclick=()=>window.print();$('#back-cutting-sheet').onclick=()=>fromList?navigate('Cutting Job Sheets'):navigate(CUTTING,{recordCode:job.Code});$('#saved-job-sheets').onclick=()=>navigate('Cutting Job Sheets');status('Posted cutting job sheet · '+job.Code);
  }catch(error){textMessage('Job sheet unavailable',error.message);}
 }
 
@@ -519,4 +537,68 @@ function renderDashboard(){
  const drafts=rowsFor(CUTTING).filter(j=>j['Cutting Status']==='Draft').length;
  desktop.innerHTML=`<section class="dashboard classic-dashboard"><div class="dashboard-heading"><h1>Inventory and Production</h1><p>Use the familiar menus above, or open a task below.</p></div><div class="dashboard-stats"><div><span>Available coils</span><strong>${available}</strong><small>With remaining stock</small></div><div><span>Consumed coils</span><strong>${consumed}</strong><small>No remaining weight</small></div><div><span>Cutting drafts</span><strong>${drafts}</strong><small>Not posted to stock</small></div></div><h2>Daily work</h2><div class="dashboard-tasks">${[['GRN (Goods Received Note)','Receive coils','Enter supplier details, receive coils and print their labels.'],[CUTTING,'Create a cutting job','Select a coil, plan strips and issue a labour job sheet.'],['Coil & Strip Stock','Review coil and strip stock','Check remaining coil weight and posted cutting outputs.'],['DC Creation','Create a delivery challan','Record the buyer, vehicle and products being dispatched.']].map(([screen,title,description],i)=>`<button class="dashboard-task" data-home-screen="${esc(screen)}"><span class="task-number">0${i+1}</span><strong>${esc(title)}</strong><span>${esc(description)}</span><span class="task-open">${esc(screen)} →</span></button>`).join('')}</div><div class="dashboard-help"><div><strong>Setup and reports are in the same place.</strong><p>Use Setup to maintain items and categories. Use Reports to review and print records.</p></div><button class="plain-button" id="home-setup">Open item setup</button></div></section>`;
  desktop.querySelectorAll('[data-home-screen]').forEach(button=>button.onclick=()=>navigate(button.dataset.homeScreen));$('#home-setup').onclick=()=>navigate('GRN Item Setup');updateNavigation();
+}
+
+function rememberCuttingJob(code,sheet,fromList=false){
+ try{sessionStorage.setItem('inventory-last-cutting-job',code);}catch{}
+ const params=new URLSearchParams({job:code});if(sheet)params.set('sheet','1');if(fromList)params.set('from','jobs');
+ history.replaceState(null,'','#'+encodeURIComponent(CUTTING)+'?'+params.toString());
+}
+function openHashRoute(){
+ try{
+  const raw=location.hash.slice(1),separator=raw.indexOf('?'),name=decodeURIComponent(separator<0?raw:raw.slice(0,separator)),params=new URLSearchParams(separator<0?'':raw.slice(separator+1));
+  if(!definitions[name]&&!reportSources[name]&&!['Coil & Strip Stock','Cutting Job Sheets'].includes(name)&&!menus['System Admin'].includes(name))return false;
+  navigate(name,{recordCode:params.get('job')||params.get('receipt')||undefined,sheet:params.get('sheet')==='1',fromList:params.get('from')==='jobs',fromHash:true});return true;
+ }catch{return false;}
+}
+function renderJobSheets(){
+ const body=createWindow('Cutting Job Sheets');
+ body.innerHTML='<h2>Saved cutting jobs</h2><p>Posted jobs can be reopened and printed at any time. Closing the window does not delete a saved job.</p><div class="report-filters"><label for="job-sheet-search">Find job or coil<input id="job-sheet-search" type="search" placeholder="Job number, coil ID or date"></label><button class="plain-button" id="refresh-job-sheets">Refresh</button><button class="plain-button" id="new-cutting-from-list">Open Cutting Creation</button></div><div id="saved-job-list"></div>';
+ const update=()=>{
+  const term=$('#job-sheet-search').value.trim().toLowerCase(),coils=coilsFrom(store);
+  const jobs=[...rowsFor(CUTTING)].reverse().filter(job=>[job.Code,job.Date,job['Coil Reference'],job['Manuf Code'],job['Cutting Status']].join(' ').toLowerCase().includes(term));
+  $('#saved-job-list').innerHTML=jobs.length?`<div class="table-box"><table class="record-table"><thead><tr><th>Job</th><th>Date</th><th>Coil ID</th><th>Processed kg</th><th>Status</th><th>Job / A4 sheet</th></tr></thead><tbody>${jobs.map(job=>{const coil=coils.get(job['Coil Reference']),posted=job['Cutting Status']==='Posted';return `<tr><td>${esc(job.Code)}</td><td>${esc(job.Date||'—')}</td><td>${esc(coil?.line['Coil ID']||coil?.line['Manuf Code']||job['Coil Reference']||job['Manuf Code']||'—')}</td><td>${esc(job['Processed Weight']||'—')}</td><td>${esc(job['Cutting Status']||'Not posted')}</td><td><button class="plain-button" data-open-cutting-job="${esc(job.Code)}">Open job</button> <button class="plain-button" data-reprint-cutting-job="${esc(job.Code)}" ${posted?'':'disabled'}>A4 job sheet</button></td></tr>`;}).join('')}</tbody></table></div>`:'<p class="empty">No saved jobs match this search.</p>';
+  body.querySelectorAll('[data-open-cutting-job]').forEach(button=>button.onclick=()=>navigate(CUTTING,{recordCode:button.dataset.openCuttingJob}));
+  body.querySelectorAll('[data-reprint-cutting-job]').forEach(button=>button.onclick=()=>navigate(CUTTING,{recordCode:button.dataset.reprintCuttingJob,sheet:true,fromList:true}));
+ };
+ $('#job-sheet-search').oninput=update;$('#new-cutting-from-list').onclick=()=>navigate(CUTTING);
+ $('#refresh-job-sheets').onclick=async()=>{try{const response=await fetch('/api/data');if(!response.ok)throw Error('Unable to load jobs');const data=await response.json();store=data.tables;revision=data.revision;update();}catch(error){textMessage('Refresh failed',error.message);}};
+ update();status('Saved cutting job sheets');
+}
+
+function setupReceiptSelector(body,record){
+ const receipts=rowsFor('GRN (Goods Received Note)');if(!receipts.length)return;
+ const selector=document.createElement('div');selector.className='saved-cutting-selector';
+ selector.innerHTML=`<label for="saved-grn-receipt">Saved receipt</label><select id="saved-grn-receipt">${receipts.map(receipt=>`<option value="${esc(receipt.Code)}" ${receipt.Code===record.Code?'selected':''}>${esc(receipt.Code)} · ${esc(receipt.Date||'No date')} · ${esc((receipt._lines||[]).map(line=>line['Coil ID']||line['Manuf Code']||line['Item Description']).filter(Boolean).join(', ')||'No coil lines')}</option>`).join('')}</select><span>${(record._lines||[]).length} saved coil line${(record._lines||[]).length===1?'':'s'}</span>`;
+ body.querySelector('.record-context').after(selector);
+ $('#saved-grn-receipt').onchange=()=>navigate('GRN (Goods Received Note)',{recordCode:$('#saved-grn-receipt').value});
+ try{sessionStorage.setItem('inventory-last-grn',record.Code);}catch{}
+ history.replaceState(null,'','#'+encodeURIComponent('GRN (Goods Received Note)')+'?'+new URLSearchParams({receipt:record.Code}).toString());
+}
+
+function openReuseCut(cutNo){
+ try{
+  if(!editing||current!==CUTTING)throw Error('Edit a draft cutting job before allocating remaining width');
+  const job=cuttingForm(),coil=coilsFrom(store).get(job['Coil Reference']),cut=calculateCutting(job,coil).cuts.find(c=>c.number===cutNo);
+  if(!cut)throw Error('Cut not found');
+  const choices=reuseChoices(job,coil,cutNo,rowsFor('Strip Size Setup'),rowsFor('Pipe Size Setup'));
+  if(!choices.length){textMessage('No matching strip sizes',`Cut ${cutNo} has ${cut.remainingWidth.toFixed(3)} mm remaining. No configured pipe/strip sizes fit this width and known thickness. Add a matching strip in Setup → Strip Size Setup.`);return;}
+  const pending={};document.querySelectorAll('[data-line-field]').forEach(input=>pending[input.dataset.lineField]=input.value);
+  message('Use remaining width — cut '+cutNo,`<p><strong>${cut.remainingWidth.toFixed(3)} mm available</strong> in this same ${cut.processed.toFixed(3)} kg cut. This adds another strip width to cut ${cutNo}; it does not consume more coil weight.</p><div class="reuse-fields"><label for="reuse-strip">Pipe / strip that fits<select id="reuse-strip">${choices.map((choice,i)=>`<option value="${i}">${esc(choice.pipe.Name)} · ${choice.width} mm · ${esc(choice.strip.Thickness||'Thickness not set')} · fits ${choice.maxCount} · ${choice.remainingWidth.toFixed(3)} mm left at maximum</option>`).join('')}</select></label><label for="reuse-quantity">Number of strips<input id="reuse-quantity" type="number" min="1" step="1"></label><label for="reuse-issue">Issue<select id="reuse-issue"><option value="">Select…</option><option value="Y">Yes</option><option value="N">No</option></select></label></div><p id="reuse-preview" role="status"></p>`,[{label:'Add to this cut',run:()=>{
+   try{
+    const selected=choices[Number($('#reuse-strip').value)],quantity=$('#reuse-quantity').value,issue=$('#reuse-issue').value;
+    const updated=addReuseToCut(cuttingForm(),coil,cutNo,selected.strip,rowsFor('Pipe Size Setup'),quantity,issue);
+    lineDraft=updated._lines;renderLines(definitions[CUTTING]);
+    document.querySelectorAll('[data-line-field]').forEach(input=>{if(pending[input.dataset.lineField]!==undefined)input.value=pending[input.dataset.lineField];});
+    bindCuttingLines();status(`Added ${selected.width} mm strips to cut ${cutNo}; no additional coil weight consumed`);
+   }catch(error){textMessage('Unable to allocate remaining width',error.message);}
+  }}]);
+  const update=reset=>{
+   const selected=choices[Number($('#reuse-strip').value)],quantity=$('#reuse-quantity');quantity.max=String(selected.maxCount);if(reset)quantity.value=String(selected.maxCount);
+   const count=Number(quantity.value),left=cut.remainingWidth-selected.width*count,valid=Number.isSafeInteger(count)&&count>=1&&count<=selected.maxCount;
+   $('#reuse-preview').textContent=valid?`${count} × ${selected.width} mm uses ${(selected.width*count).toFixed(3)} mm; ${left.toFixed(3)} mm remains. Cut input stays ${cut.processed.toFixed(3)} kg.`:`Enter a whole number from 1 to ${selected.maxCount}.`;
+   modal.querySelector('[data-modal-action="0"]').disabled=!valid;
+  };
+  $('#reuse-strip').onchange=()=>update(true);$('#reuse-quantity').oninput=()=>update(false);update(true);
+ }catch(error){textMessage('Remaining width unavailable',error.message);}
 }

@@ -35,3 +35,7 @@
 @media(max-width:480px){.line-editor.grn-line-editor{grid-template-columns:minmax(0,1fr)}.line-editor.grn-line-editor button{justify-self:stretch;width:100%}}
 
 .cutting-summary .cut-balance-table{min-height:0;max-height:200px;margin:10px 0}.cut-balance-table .record-table th{font-weight:bold}
+
+.saved-cutting-selector{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:12px}.saved-cutting-selector select{min-width:160px;max-width:100%;padding:5px;border:1px solid #a8b4c1;font:inherit}#job-sheet-search{padding:6px;min-width:220px;max-width:100%}
+
+.reuse-fields{display:grid;gap:12px}.reuse-fields label{display:grid;gap:6px;font-size:12px}.reuse-fields select,.reuse-fields input{width:100%;min-width:0;padding:7px;border:1px solid #a8b4c1;font:inherit}.reuse-fields select{max-width:100%;white-space:normal}#reuse-preview{line-height:1.7}

@@ -4,10 +4,16 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readInventory,replaceInventory} from './database.mjs';
 import {login,session,logout} from './auth.mjs';
+if(process.env.DATABASE_URL&&(process.env.ADMIN_USERNAME||process.env.ADMIN_PASSWORD)){
+ const {bootstrapAdmin}=await import('./postgres-auth.mjs');await bootstrapAdmin(process.env.ADMIN_USERNAME,process.env.ADMIN_PASSWORD);
+}
 const root=fileURLToPath(new URL('./dist/',import.meta.url));
 const port=Number(process.env.PORT||4173);
-const secure=process.env.COOKIE_SECURE==='1';
-const origin=`${secure?'https':'http'}://${process.env.PUBLIC_HOST||`localhost:${port}`}`;
+const onRender=process.env.RENDER==='true';
+const secure=onRender||process.env.COOKIE_SECURE==='1';
+const bindHost=process.env.HOST||(onRender?'0.0.0.0':'127.0.0.1');
+if(onRender&&!process.env.DATABASE_URL)throw Error('Render deployments require DATABASE_URL; local SQLite is not durable on the free service');
+const origin=`${secure?'https':'http'}://${process.env.PUBLIC_HOST||process.env.RENDER_EXTERNAL_HOSTNAME||`localhost:${port}`}`;
 const hosts=[new URL(origin).host,...(!secure?[`127.0.0.1:${port}`]:[])];
 const origins=[origin,...(!secure?[`http://127.0.0.1:${port}`]:[])];
 const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.json':'application/json; charset=utf-8','.ico':'image/x-icon'};
@@ -24,6 +30,7 @@ const server=http.createServer(async(req,res)=>{
  const json=(code,data)=>{res.writeHead(code,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(data));};
  const redirect=to=>{res.writeHead(303,{Location:to});res.end();};
  try{
+ if(req.url==='/healthz'&&['GET','HEAD'].includes(req.method)){if(process.env.DATABASE_URL){const {pool}=await import('./postgres-store.mjs');await pool.query('SELECT 1');}return json(200,{ok:true});}
  if(!hosts.includes(req.headers.host))return json(403,{error:'Host not allowed'});
  const url=new URL(req.url,'http://localhost');
  if(!['GET','HEAD','POST','PUT'].includes(req.method))return json(405,{error:'Method not allowed'});
@@ -37,27 +44,32 @@ const server=http.createServer(async(req,res)=>{
  res.setHeader('Set-Cookie',cookie(result.token,28800));return json(200,{ok:true});
  }
  const publicFiles={'/login':'login.html','/login.js':'login.js','/login.css':'login.css','/appearance.js':'appearance.js'};
- const user=session(req);
+ const user=await session(req);
  if(!user&&!Object.hasOwn(publicFiles,url.pathname))return url.pathname.startsWith('/api/')?json(401,{error:'Please sign in'}):redirect('/login');
  if(user&&url.pathname==='/login')return redirect('/');
  if(url.pathname==='/api/auth/session'&&req.method==='GET')return json(200,{csrf:user.csrf});
  if(['POST','PUT'].includes(req.method)&&req.headers['x-csrf-token']!==user?.csrf)return json(403,{error:'Invalid security token'});
- if(url.pathname==='/api/auth/logout'&&req.method==='POST'){logout(user.id);res.setHeader('Set-Cookie',cookie('',0));return json(200,{ok:true});}
+ if(url.pathname==='/api/auth/logout'&&req.method==='POST'){await logout(user.id);res.setHeader('Set-Cookie',cookie('',0));return json(200,{ok:true});}
  if(url.pathname==='/api/data'){
- if(req.method==='GET')return json(200,readInventory());
+ if(req.method==='GET')return json(200,await readInventory());
  if(req.method!=='PUT')return json(405,{error:'Method not allowed'});
  const input=await body(req,10*1024*1024);
  if(!Number.isSafeInteger(input.revision))return json(400,{error:'Revision required'});
- let revision;try{revision=replaceInventory(input.tables,input.revision);}catch(error){return json(400,{error:error.message});}
- return revision===null?json(409,{error:'Data changed in another window. Reload before saving.'}):json(200,{revision,tables:readInventory().tables});
+ let revision;try{revision=await replaceInventory(input.tables,input.revision);}catch(error){return json(400,{error:error.message});}
+ return revision===null?json(409,{error:'Data changed in another window. Reload before saving.'}):json(200,{revision,tables:(await readInventory()).tables});
  }
  if(!['GET','HEAD'].includes(req.method))return json(405,{error:'Method not allowed'});
  const name=publicFiles[url.pathname]||decodeURIComponent(url.pathname==='/'?'/index.html':url.pathname);
  const file=path.resolve(root,'.'+(name.startsWith('/')?name:'/'+name));
  if(!file.startsWith(root)||path.relative(root,file).split(path.sep).some(p=>p.startsWith('.')))return json(404,{error:'Not found'});
  const data=await readFile(file);res.writeHead(200,{'Content-Type':mime[path.extname(file)]||'application/octet-stream'});res.end(req.method==='HEAD'?undefined:data);
- }catch(error){return json(error.status||404,{error:error.status?error.message:'Not found'});}
+ }catch(error){const unavailable=error.code&& !['ENOENT','EISDIR'].includes(error.code);return json(error.status||(unavailable?503:404),{error:error.status?error.message:unavailable?'Service temporarily unavailable':'Not found'});}
 });
 server.requestTimeout=15000;server.headersTimeout=10000;server.maxRequestsPerSocket=100;
-server.listen(port,'127.0.0.1',()=>console.log(`Inventory: http://localhost:${port} (login required)`));
+server.listen(port,bindHost,()=>console.log(`Inventory: ${onRender?origin:`http://localhost:${port}`} (login required)`));
 server.on('error',e=>{console.error(e.code);process.exitCode=1;});
+
+for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>{
+ server.close(async()=>{if(process.env.DATABASE_URL){const {pool}=await import('./postgres-store.mjs');await pool.end();}process.exit(0);});
+ setTimeout(()=>process.exit(1),10000).unref();
+});

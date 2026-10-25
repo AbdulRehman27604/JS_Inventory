@@ -4,10 +4,11 @@ Runs at **http://localhost:4173**. This is an offline recreation of the applicat
 
 ## Start
 
-Requires **Node.js 24 or newer**. Tested with Node 24.12.0. No npm packages, installation step, build step, or original-site login is required. Create a local account before signing in.
+Requires **Node.js 24 or newer**. Tested with Node 24.12.0. Run `npm install` once to install the PostgreSQL driver. Local SQLite use does not require a database server or original-site login. Create a local account before signing in.
 
 ```sh
 cd /Users/abdulz/Desktop/codex-code/js_inventory
+npm install
 npm run user:set -- admin
 npm start
 ```
@@ -88,7 +89,11 @@ The optional browser test helper requires a separate Chrome debugging instance o
 
 ## Hosting
 
-This delivery is local-only and has not been published. Vercel would require adapting the API and replacing local-file SQLite with durable hosted storage. Render can retain SQLite on a paid service with a persistent disk, but deployment still requires a trusted HTTPS reverse proxy and persistent storage. Do not upload the authenticated data or captures to a public repository or static site.
+Render free web service + PostgreSQL support is implemented. Set `DATABASE_URL` to the **Internal Database URL** on Render; use the **External Database URL** for migration/backup tools on your Mac. Inventory, encrypted accounts, sessions and login limits then persist in PostgreSQL. Without `DATABASE_URL`, the existing local SQLite setup remains active.
+
+Follow [DEPLOY_RENDER.md](DEPLOY_RENDER.md) for environment variables, initial administrator setup, migrating existing inventory and backups. `render.yaml` configures a free web service using the database you already created. The app has not been published automatically; deployment still needs access to your Render service and an up-to-date repository.
+
+The deployable `dist/schema.js` contains only UI definitions, with no business rows. Private `dist/data.js` remains a local seed/reference file and is not needed by the Render build. Runtime artwork is copied from tracked `assets/` during `npm run build`.
 
 ## Authentication
 
@@ -127,13 +132,13 @@ In Cutting Creation, enter the full printed ID in **Find coil by full ID** to se
 
 ## Strip-count suggestions and labour job sheets
 
-In Cutting Creation, select the coil and a strip width. The live **maximum strip count** uses the width still unallocated by submitted lines: `floor(available width / strip width)`. **Use maximum for this strip width** fills the current line’s strip count; review it, then Submit line.
+In Cutting Creation, select the coil and a strip width. The live **maximum strip count** uses the full coil width for the next separate cut: `floor(coil width / strip width)`. Earlier cuts consume weight, not the width of the unprocessed coil. **Use maximum for this strip width** fills the current line’s strip count; review it, then Submit line.
 
-For a mix, submit the desired strip widths (the last width may still be in the line editor), then click **Suggest best mix of selected widths**. The optimizer keeps at least one strip of every selected line, minimizes unused width, and prefers more strips when layouts have equal unused width. It only uses the selected widths and does not invent other products. The suggested quantities replace the draft layout only after **Apply suggested mix**. Changing the source layout invalidates the previous suggestion. Mixed suggestions support up to 24 selected lines and three decimal places in mm, with a bounded exact integer search; unsupported inputs are rejected instead of approximated.
+For a mix, submit the desired strip widths (the last width may still be in the line editor), then click **Suggest best mix of selected widths**. The optimizer keeps at least one strip of every selected line, minimizes unused width, and prefers more strips when layouts have equal unused width. It only uses the selected widths and does not invent other products. Use **Submit suggested cut** to add the proposed widths together as one new cut with a shared input weight. Earlier submitted cuts are not replaced. Changing the source layout invalidates the previous suggestion. Mixed suggestions support up to 24 selected lines and three decimal places in mm, with a bounded exact integer search; unsupported inputs are rejected instead of approximated.
 
 Example: a 1,200 mm coil with a single 230 mm strip size fits five strips and leaves 50 mm. Selecting both 230 mm and 100 mm widths allows a suggested mix of three 230 mm strips plus five 100 mm strips: 1,190 mm used and 10 mm unused. This is a geometric width calculation; no knife/kerf or mandatory edge-trim allowance is included. The operator must verify machine allowances before cutting.
 
-Posting opens a **Cutting Job Sheet** preview. Use **Print / Save PDF** to issue it to the labour team. It contains the full coil ID, posted job number/date, receipt, material/batch, coil width, weight to process, strip widths/counts, estimated weights, trim disposition, comments, and blank spaces for actual output/scrap weights and operator/supervisor signatures. The sheet shows the immutable posted layout, not an unapproved suggestion. Reprint it with **Print labour job sheet** on the posted cutting record. Draft and void jobs cannot issue job sheets. Sheets use A4 portrait, six lines per numbered page, with continuation sheets for longer jobs. Turn off browser headers/footers when printing.
+Posting opens a **Cutting Job Sheet** preview. Use **Print / Save PDF** to issue it to the labour team. It contains the full coil ID, posted job number/date, receipt, material/batch, coil width, weight to process, strip widths/counts, estimated weights, trim disposition, comments, and blank spaces for actual output/scrap weights and operator/supervisor signatures. The sheet shows the immutable posted layout, not an unapproved suggestion. Reprint it with **Print labour job sheet** on the posted cutting record. Draft and void jobs cannot issue job sheets. Sheets use A4 portrait, four lines per numbered page for per-cut jobs (six for legacy shared layouts), with continuation sheets for longer jobs. Turn off browser headers/footers when printing.
 
 ## GRN item and coil dropdowns
 
@@ -158,3 +163,31 @@ Date fields use the browser’s native calendar. Click an editable date field or
 The header displays the current local date and a clock that updates every second, including across midnight. This live display does not change a document date while an employee is working.
 
 Use the **Dark mode / Light mode** button in the top-right corner (sun/moon icon on narrow screens). The choice is remembered in that browser and shared between the login page and workspace. Without an explicit choice, the interface follows the device’s colour preference. Switching themes preserves unsaved fields and does not reload the page. Paper labels, job sheets, and reports retain their light print styling.
+
+## Separate cuts and running coil balance
+
+Each **Submit line** in Cutting Creation records a separate physical cut with its own **Cut No** and **Cut Weight**. **Weight for next cut (kg)** is an entry field; changing it never changes the weights of submitted cuts. The table shows the saved cut weights alongside estimated strip output weights. Each cut starts with the original coil width because it processes another portion of the coil length.
+
+For a 5,000 kg coil: enter 2,000 kg and submit the first strip layout; the projected balance becomes 3,000 kg. Enter 2,000 kg again and submit the next layout; the projected balance becomes 1,000 kg. Entering 500 kg for a subsequent cut leaves those first two cuts unchanged. The preview clearly identifies any next cut that has not yet been submitted. Saving a draft does not consume stock; posting deducts the sum of cut input weights once, and voiding restores that sum.
+
+A **Submit suggested cut** action can add several strip-width rows sharing one Cut No and Cut Weight. Those rows consume that input weight once. Removing a row belonging to a grouped cut removes that whole cut; its tooltip identifies this. Job sheets show cut numbers, each cut’s input weight/unused width, and the total weight to process. Stock output records also identify their cut number.
+
+Older jobs with no per-cut fields retain their original single shared-weight calculation. They are not silently reinterpreted as separate cuts. To correct an already posted old job, void it, then create a replacement with each physical cut submitted separately. An old draft can be reviewed or replaced before posting. The server validates per-cut totals and prevents combined cuts exceeding available stock.
+
+## Reopening saved cutting job sheets
+
+Closing Cutting Creation or its A4 preview does not delete a saved job. **Reports → Cutting Job Sheets** lists saved jobs with their date, coil ID, processed weight and status. Search by job number or coil ID, then choose **A4 job sheet** to reopen a posted sheet and use **Print / Save PDF** again. Draft, unposted and void jobs do not issue labour sheets.
+
+Cutting Creation also has a **Saved cutting job** selector and a **Saved job sheets** button. It remembers the last viewed job in the current browser tab. The existing **Report** toolbar icon opens the labour sheet when the selected cutting job is posted. Sheet URLs include the job number and reopen that same sheet after a reload while signed in. The **Back** button returns to the originating list or cutting record. Printed content is regenerated from the saved job; saving a PDF file to your computer remains an explicit print-dialog action.
+
+GRN now includes a **Saved receipt** selector showing receipt number, date, coil identifiers and the number of saved coil lines. It remembers the viewed receipt in the current browser tab and initially opens the latest receipt when there is no prior selection. Receipt links include `?receipt=NUMBER` in the screen fragment, so refreshing or reopening the link retains the intended receipt and its line items. Use **Print coil label** or **Coil labels · Print / Save PDF** on that saved receipt.
+
+## Use remaining width within the same cut
+
+While editing a draft cutting job, each submitted cut with spare width has **Use remaining width** in its calculation table. The dropdown lists configured pipe/strip sizes from **Setup → Strip Size Setup** that fit within that cut’s unused width, with a valid pipe mapping and matching recorded thickness where available. Each option shows its strip width, maximum strip count and width left at that maximum. Options with the least leftover width are listed first. If no matching size exists, add it in setup; the app does not invent product specifications.
+
+Select a size, choose its strip count and Issue Yes/No, then **Add to this cut**. The new strip line shares the original Cut No and Cut Weight, so no additional input weight is consumed. Quantities exceeding the available width are rejected. Posted and void jobs cannot be modified; reuse must be planned before posting.
+
+Example: a 3,000 kg, 900 mm coil has a 1,500 kg cut with four 200 mm strips. This leaves 100 mm in that cut. Adding one configured 100 mm strip uses the whole 900 mm, leaves zero trim, and still processes only 1,500 kg. The unprocessed coil remains 1,500 kg. The job sheet prints both widths under the same cut number.
+
+**Issue** is now a Yes/No dropdown in transaction line editors that have this field. Values remain Y/N in saved records for compatibility with the existing issue reports.

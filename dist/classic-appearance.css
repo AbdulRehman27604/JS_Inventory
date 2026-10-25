@@ -33,3 +33,7 @@ html[data-theme=dark] body{background:#172a3d}html[data-theme=dark] #desktop{bac
 @media(max-width:640px){.app-title{height:49px;padding:0 7px 13px;align-items:center;gap:5px}.classic-brand{max-width:calc(100% - 50px);font-size:11px}.app-title .header-tools{margin-left:auto}.app-title .header-clock{position:absolute;left:23px;bottom:5px;gap:7px}.app-title .header-clock [data-live-date],.app-title .header-clock [data-live-time]{font-size:9px}.app-title .theme-toggle{width:25px;padding:2px}.app-title .theme-toggle>span:last-child{display:none}#menubar{height:48px;flex-wrap:wrap;align-content:start}#menubar>.plain-button{height:22px;min-height:0;margin:0 3px 0 auto!important;padding:1px 8px;font-size:10px}#desktop{top:97px}.menu>button{font-size:11px}.dropdown{max-height:65vh;overflow-y:auto;max-width:calc(100vw - 12px)}.menu:nth-child(n+4) .dropdown{left:auto;right:0}.classic-dashboard{margin:12px;padding:14px}.dashboard-tasks{grid-template-columns:1fr}.dashboard-stats{gap:10px 18px}.record-context{font-size:10px}.screen-notes{margin:10px}.section-heading{align-items:flex-start;flex-direction:column}}
 
 html[data-theme=dark] #status{background:#785923;color:#fff1cf}html[data-theme=dark] #coverage{background:#2d4359;color:#c2d7e9;border-color:#526c83}
+
+html[data-theme=dark] .saved-cutting-selector select{background:#101d2c;color:#d5e2ef;border-color:#3b5067}
+
+html[data-theme=dark] .reuse-fields select{background:#101d2c;color:#d5e2ef;border-color:#3b5067}

@@ -1,0 +1,26 @@
+# Use the already-created Render Postgres database: DATABASE_URL is entered in the Dashboard.
+# This blueprint creates only the web service, never a second database.
+services:
+  - type: web
+    name: js-inventory
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build && npm run check
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeployTrigger: off
+    envVars:
+      - key: NODE_VERSION
+        value: "24.12.0"
+      - key: HOST
+        value: 0.0.0.0
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTH_ENCRYPTION_KEY
+        generateValue: true
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false

@@ -32,9 +32,10 @@ function calculateLayout(job,coil){
  if(!['Scrap','Reusable'].includes(job['Trim Disposition']))throw Error('Choose whether unused width is scrap or reusable');
  return {processed,usedWidth,remainingWidth,utilization:usedWidth/coil.width*100,outputWeight:processed-trimWeight,trimWeight,lines};
 }
+export function hasCutWeights(lines){return (lines||[]).some(line=>String(line['Cut No']??'').trim()!==''||String(line['Cut Weight']??'').trim()!=='');}
 // Cut groups let several widths share one physical pass while separate submissions consume separate weights.
 export function calculateCutting(job,coil){
- const tagged=(job._lines||[]).some(line=>line['Cut No']!==undefined||line['Cut Weight']!==undefined);
+ const tagged=hasCutWeights(job._lines);
  if(!tagged){const result=calculateLayout(job,coil);return {...result,separateCuts:false,cuts:[{number:1,...result}]};}
  if(!coil)throw Error('Select a received coil with width and weight recorded');
  const groups=new Map();
@@ -51,12 +52,13 @@ export function calculateCutting(job,coil){
 }
 export function snapshotCuts(lines,legacyWeight){
  if(!lines.length)return [];
- if(lines.some(line=>line['Cut No']!==undefined||line['Cut Weight']!==undefined))return structuredClone(lines);
+ if(hasCutWeights(lines))return structuredClone(lines);
  const weight=number(legacyWeight,'Existing layout weight');
  return lines.map(line=>({...line,'Cut No':'1','Cut Weight':String(weight)}));
 }
 export function appendCut(job,newLines,weight){
- const input=number(weight,'Processed Weight');
+ if(!String(weight??'').trim()||!Number.isFinite(Number(weight))||Number(weight)<=0)throw Error('Enter Processed Weight in kg greater than 0 (for example, 1000). This is the weight for the next cut.');
+ const input=Number(weight);
  if(!Array.isArray(newLines)||!newLines.length)throw Error('Add at least one strip line');
  const previous=snapshotCuts(job._lines||[],job['Processed Weight']);
  const next=Math.max(0,...previous.map(line=>Number(line['Cut No'])))+1;
@@ -96,7 +98,7 @@ export function validateCuttingChanges(tables,previous){
  }
  // Persist authoritative totals and estimates, independent of the browser's next-cut input.
  for(const job of tables[CUTTING]||[]){
-  if(!(job._lines||[]).some(line=>line['Cut No']!==undefined||line['Cut Weight']!==undefined))continue;
+  if(job['Cutting Status']==='Void'||!hasCutWeights(job._lines))continue;
   const result=calculateCutting(job,after.get(job['Coil Reference']));job['Processed Weight']=String(result.processed);job._lines=result.lines;
  }
  return cuttingStock(tables);
