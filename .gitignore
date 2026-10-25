@@ -1,0 +1,12 @@
+# Private captured business records and generated local state.
+/data/
+/backups/
+/capture/
+/verification/
+/dist/reference/
+/dist/assets/
+/dist/data.js
+*.zip
+node_modules/
+.DS_Store
+__pycache__/

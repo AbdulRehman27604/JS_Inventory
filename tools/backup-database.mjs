@@ -1,0 +1,11 @@
+import {DatabaseSync} from 'node:sqlite';
+import {mkdirSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {databasePath} from '../database.mjs';
+const folder=fileURLToPath(new URL('../backups/',import.meta.url));
+mkdirSync(folder,{recursive:true,mode:0o700});
+const destination=folder+'inventory-'+new Date().toISOString().replaceAll(/[:.]/g,'-')+'.sqlite';
+const db=new DatabaseSync(databasePath);
+db.prepare('VACUUM INTO ?').run(destination);
+db.close();
+console.log(destination);

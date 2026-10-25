@@ -1,0 +1,16 @@
+{
+  "name": "inventory-local-recreation",
+  "private": true,
+  "version": "1.0.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "backup": "node tools/backup-database.mjs",
+    "check": "node --check dist/app.js && node --check dist/data.js && node --check server.mjs && node --check database.mjs && node --check auth.mjs && node --check dist/login.js && node --check tools/set-user.mjs && node --check dist/cutting.js && node --check dist/coil-label.js && node --check coil-ids.mjs && node --check dist/cutting-job-sheet.js && node --check grn-setups.mjs && node --check dist/appearance.js && node --check dist/date-utils.js",
+    "user:set": "node tools/set-user.mjs",
+    "test": "node --test tools/auth.test.mjs tools/cutting.test.mjs tools/coil-ids.test.mjs tools/cutting-layout.test.mjs tools/grn-setups.test.mjs tools/date-utils.test.mjs"
+  },
+  "type": "module"
+}
